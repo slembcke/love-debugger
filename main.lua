@@ -1,7 +1,7 @@
 local gfx = love.graphics;
 
 dbg = require 'debugger'
-dbg.auto_where = 3
+dbg.auto_where = 2
 function dbg.exit() love.event.quit() end
 -- function love.errorhandler(err) dbg.error(err, 3) end
 
@@ -55,6 +55,18 @@ end
 local ESCAPE = string.char(27)
 local COLORS = {["31"] = {1, 0.5, 0.5}, ["34"] = {0.5, 0.5, 1}, ["0"] = {1, 1, 1}}
 
+local function escape_seq(str, i)
+	local ctrl, j = str:match("%[(%d+)m()", i + 1)
+	local color = COLORS[ctrl]
+	if color then
+		dbg_color = color
+		gfx.setColor(unpack(color))
+		return j
+	else
+		return i + 1
+	end
+end
+
 function dbg.write(str)
 	io.write(str)
 	io.flush()
@@ -71,16 +83,7 @@ function dbg.write(str)
 			
 			-- Handle escape sequences for colors.
 			if char == ESCAPE then
-				local ctrl, j = str:match("%[(%d+)m()", i + 1)
-				local color = COLORS[ctrl]
-				if color then
-					dbg_color = color
-					gfx.setColor(unpack(color))
-					i = j
-				else
-					dbg_putc("^")
-					i = i + 1
-				end
+				i = escape_seq(str, i)
 			else
 				dbg_putc(char)
 				i = i + 1
