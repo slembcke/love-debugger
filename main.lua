@@ -11,7 +11,7 @@ local dbg_font = gfx.newFont(14)
 local dbg_canvas = gfx.newCanvas(gfx.getDimensions())
 dbg_canvas:renderTo(function() gfx.clear() end)
 
-local function dbg_char(char)
+local function dbg_putc(char)
 	if char == "\n" then
 		dbg_cursor.x = 0
 		dbg_cursor.y = dbg_cursor.y + dbg_font:getHeight()
@@ -21,15 +21,43 @@ local function dbg_char(char)
 	end
 end
 
+local CHARMAP = {
+	["space"] = " ",
+	["return"] = "\n",
+	["tab"] = "\t",
+}
+
 function dbg.read(prompt)
 	dbg.write(prompt)
-	local str = io.read()
-	dbg.writeln(str)
-	return str
+	
+	local str = ""
+	while true do
+		gfx.clear()
+		gfx.draw(dbg_canvas)
+		gfx.present()
+		
+		local event, a, b, c = love.event.wait()
+		if event == "quit" or (event == "keypressed" and a == "escape") then
+			return nil
+		elseif event == "keypressed" then
+			local char = CHARMAP[a] or a
+			dbg_canvas:renderTo(function() dbg_putc(char) end)
+			
+			if char == "\n" then
+				return str
+			else
+				str = str..char
+			end
+		end
+	end
 end
+
+local ESCAPE = string.char(27)
+local COLORS = {["31"] = {1, 0.5, 0.5}, ["34"] = {0.5, 0.5, 1}, ["0"] = {1, 1, 1}}
 
 function dbg.write(str)
 	io.write(str)
+	io.flush()
 	
 	gfx.push()
 	local _canvas = gfx.getCanvas()
@@ -37,9 +65,26 @@ function dbg.write(str)
 	local _color = {gfx.getColor()}
 	
 	dbg_canvas:renderTo(function()
-		for i = 1, #str do
+		gfx.setColor(unpack(dbg_color))
+		local i = 1; while i <= #str do
 			local char = str:sub(i, i)
-			dbg_char(char)
+			
+			-- Handle escape sequences for colors.
+			if char == ESCAPE then
+				local ctrl, j = str:match("%[(%d+)m()", i + 1)
+				local color = COLORS[ctrl]
+				if color then
+					dbg_color = color
+					gfx.setColor(unpack(color))
+					i = j
+				else
+					dbg_putc("^")
+					i = i + 1
+				end
+			else
+				dbg_putc(char)
+				i = i + 1
+			end
 		end
 	end)
 	
@@ -49,8 +94,7 @@ function dbg.write(str)
 	gfx.pop()
 end
 
-dbg.read("whoop> ")
-dbg.writeln("foobar %d", 12)
+dbg()
 
 function love.draw()
 	gfx.draw(dbg_canvas)
@@ -91,7 +135,7 @@ function love.errorhandler(msg)
 			return
 		elseif event == "keypressed" then
 			local char = keymap[a] or a
-			dbg_canvas:renderTo(function() dbg_char(char) end)
+			dbg_canvas:renderTo(function() dbg_putc(char) end)
 		end
 	end
 end
