@@ -1,4 +1,5 @@
 local gfx = love.graphics;
+love.window.setMode(800, 600, {highdpi = true})
 
 dbg = require 'debugger'
 dbg.auto_where = 2
@@ -7,7 +8,7 @@ function dbg.exit() love.event.quit() end
 
 local dbg_cursor = {x = 0, y = 0}
 local dbg_color = {1, 1, 1, 1}
-local dbg_font = gfx.newFont(14)
+local dbg_font = gfx.newFont("VeraMono.ttf", 12)
 local dbg_canvas = gfx.newCanvas(gfx.getDimensions())
 dbg_canvas:renderTo(function() gfx.clear() end)
 
@@ -77,6 +78,7 @@ function dbg.write(str)
 	local _color = {gfx.getColor()}
 	
 	dbg_canvas:renderTo(function()
+		gfx.setFont(dbg_font)
 		gfx.setColor(unpack(dbg_color))
 		local i = 1; while i <= #str do
 			local char = str:sub(i, i)
@@ -97,48 +99,15 @@ function dbg.write(str)
 	gfx.pop()
 end
 
-dbg()
-
 function love.draw()
+	local var = "" + 1
 	gfx.draw(dbg_canvas)
 end
 
 function love.errorhandler(msg)
-	if not love.window or not love.graphics or not love.event then return end
-	if not love.graphics.isCreated() or not love.window.isOpen() then return love.errhand(msg) end
+	-- Call the builtin handler to reset state, but don't execute it's loop function.
+	love.errhand(msg)
 	
-	if love.audio then love.audio.stop() end
-	if love.joystick then for _, v in ipairs(love.joystick.getJoysticks()) do v:setVibration() end end
-	
-	if love.mouse then
-		love.mouse.setVisible(true)
-		love.mouse.setGrabbed(false)
-		love.mouse.setRelativeMode(false)
-		if love.mouse.isCursorSupported() then love.mouse.setCursor() end
-	end
-	
-	gfx.reset()
-	gfx.origin()
-	gfx.setColor(1, 1, 1, 1)
-	
-	local keymap = {
-		["space"] = " ",
-		["return"] = "\n",
-		["tab"] = "\t",
-	}
-	
-	while true do
-		gfx.clear()
-		gfx.draw(dbg_canvas)
-		gfx.present()
-		
-		local event, a, b, c = love.event.wait()
-		
-		if event == "quit" or (event == "keypressed" and a == "escape") then
-			return
-		elseif event == "keypressed" then
-			local char = keymap[a] or a
-			dbg_canvas:renderTo(function() dbg_putc(char) end)
-		end
-	end
+	-- Jump to the debugger.
+	dbg.error(msg, 3)
 end
