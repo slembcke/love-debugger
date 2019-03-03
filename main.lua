@@ -10,15 +10,38 @@ local dbg_cursor = {x = 0, y = 0}
 local dbg_color = {1, 1, 1, 1}
 local dbg_font = gfx.newFont("VeraMono.ttf", 12)
 local dbg_canvas = gfx.newCanvas(gfx.getDimensions())
-dbg_canvas:renderTo(function() gfx.clear() end)
+dbg_canvas:renderTo(function() gfx.clear(0, 0, 0, 1) end)
+
+local function newline()
+	dbg_cursor.x = 0
+	
+	local line_height = dbg_font:getHeight()
+	dbg_cursor.y = dbg_cursor.y + line_height
+	
+	if dbg_cursor.y > dbg_canvas:getHeight() - line_height then
+		local canvas = gfx.newCanvas(dbg_canvas:getDimensions())
+		gfx.setCanvas(canvas)
+		gfx.clear(0, 0, 0, 1)
+		gfx.setColor(1, 1, 1, 1)
+		gfx.draw(dbg_canvas, 0, -line_height)
+		dbg_canvas:release()
+		
+		dbg_canvas = canvas
+		dbg_cursor.y = dbg_cursor.y - line_height
+	end
+end
 
 local function dbg_putc(char)
 	if char == "\n" then
-		dbg_cursor.x = 0
-		dbg_cursor.y = dbg_cursor.y + dbg_font:getHeight()
+		newline()
 	else
+		local width = dbg_font:getWidth(char)
+		if dbg_cursor.x + width > dbg_canvas:getWidth() then
+			newline()
+		end
+		
 		gfx.print(char, dbg_cursor.x, dbg_cursor.y)
-		dbg_cursor.x = dbg_cursor.x + dbg_font:getWidth(char)
+		dbg_cursor.x = dbg_cursor.x + width
 	end
 end
 
@@ -42,7 +65,7 @@ function dbg.read(prompt)
 			return nil
 		elseif event == "keypressed" then
 			local char = CHARMAP[a] or a
-			dbg_canvas:renderTo(function() dbg_putc(char) end)
+			dbg.write(char)
 			
 			if char == "\n" then
 				return str
@@ -77,21 +100,20 @@ function dbg.write(str)
 	local _font = gfx.getFont()
 	local _color = {gfx.getColor()}
 	
-	dbg_canvas:renderTo(function()
-		gfx.setFont(dbg_font)
-		gfx.setColor(unpack(dbg_color))
-		local i = 1; while i <= #str do
-			local char = str:sub(i, i)
-			
-			-- Handle escape sequences for colors.
-			if char == ESCAPE then
-				i = escape_seq(str, i)
-			else
-				dbg_putc(char)
-				i = i + 1
-			end
+	gfx.setCanvas(dbg_canvas)
+	gfx.setFont(dbg_font)
+	gfx.setColor(unpack(dbg_color))
+	local i = 1; while i <= #str do
+		local char = str:sub(i, i)
+		
+		-- Handle escape sequences for colors.
+		if char == ESCAPE then
+			i = escape_seq(str, i)
+		else
+			dbg_putc(char)
+			i = i + 1
 		end
-	end)
+	end
 	
 	gfx.setCanvas(_canvas)
 	gfx.setFont(_font)
