@@ -3,7 +3,6 @@ local gfx = love.graphics;
 local dbg = require 'debugger'
 dbg.auto_where = 2
 dbg.enable_color()
-function dbg.exit() love.event.quit() end
 
 local dbg_cursor = {x = 0, y = 0}
 local dbg_color = {1, 1, 1, 1}
@@ -73,7 +72,7 @@ function dbg.read(prompt)
 		
 		local event, a = love.event.wait()
 		if event == "quit" then
-			return nil
+			return "q"
 		elseif event == "keypressed" and a == "return" then
 			dbg.write("\n")
 			return str
