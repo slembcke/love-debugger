@@ -460,9 +460,7 @@ local function run_command(line)
 		last_cmd = line
 		-- unpack({...}) prevents tail call elimination so the stack frame indices are predictable.
 		return unpack({command(command_arg)})
-	end
-	
-	if #line == 1 then
+	else
 		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." command '%s' not recognized.\nType 'h' and press return for a command list.", line)
 		return false
 	end

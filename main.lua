@@ -4,13 +4,30 @@ love.window.setMode(800, 600, {highdpi = true})
 dbg = require 'debugger'
 dbg.auto_where = 2
 function dbg.exit() love.event.quit() end
--- function love.errorhandler(err) dbg.error(err, 3) end
 
 local dbg_cursor = {x = 0, y = 0}
 local dbg_color = {1, 1, 1, 1}
 local dbg_font = gfx.newFont("VeraMono.ttf", 12)
 local dbg_canvas = gfx.newCanvas(gfx.getDimensions())
 dbg_canvas:renderTo(function() gfx.clear(0, 0, 0, 1) end)
+
+function dbg_render_to(func)
+	gfx.push()
+	local _canvas = gfx.getCanvas()
+	local _font = gfx.getFont()
+	local _color = {gfx.getColor()}
+	
+	gfx.setCanvas(dbg_canvas)
+	gfx.setFont(dbg_font)
+	gfx.setColor(unpack(dbg_color))
+	
+	func()
+	
+	gfx.setCanvas(_canvas)
+	gfx.setFont(_font)
+	gfx.setColor(unpack(_color))
+	gfx.pop()
+end
 
 local function newline()
 	dbg_cursor.x = 0
@@ -45,12 +62,6 @@ local function dbg_putc(char)
 	end
 end
 
-local CHARMAP = {
-	["space"] = " ",
-	["return"] = "\n",
-	["tab"] = "\t",
-}
-
 function dbg.read(prompt)
 	dbg.write(prompt)
 	
@@ -60,18 +71,25 @@ function dbg.read(prompt)
 		gfx.draw(dbg_canvas)
 		gfx.present()
 		
-		local event, a, b, c = love.event.wait()
-		if event == "quit" or (event == "keypressed" and a == "escape") then
+		local event, a = love.event.wait()
+		if event == "quit" then
 			return nil
-		elseif event == "keypressed" then
-			local char = CHARMAP[a] or a
-			dbg.write(char)
+		elseif event == "keypressed" and a == "return" then
+			dbg.write("\n")
+			return str
+		elseif event == "keypressed" and a == "backspace" and #str > 0 then
+			local char = str:sub(-1, -1)
+			local w, h = dbg_font:getWidth(char), dbg_font:getHeight(char)
+			dbg_cursor.x = dbg_cursor.x - w
+			dbg_render_to(function()
+				gfx.setColor(0, 0, 0)
+				gfx.rectangle("fill", dbg_cursor.x, dbg_cursor.y, w, h)
+			end)
 			
-			if char == "\n" then
-				return str
-			else
-				str = str..char
-			end
+			str = str:sub(1, -2)
+		elseif event == "textinput" then
+			dbg.write(a)
+			str = str..a
 		end
 	end
 end
@@ -92,33 +110,19 @@ local function escape_seq(str, i)
 end
 
 function dbg.write(str)
-	io.write(str)
-	io.flush()
-	
-	gfx.push()
-	local _canvas = gfx.getCanvas()
-	local _font = gfx.getFont()
-	local _color = {gfx.getColor()}
-	
-	gfx.setCanvas(dbg_canvas)
-	gfx.setFont(dbg_font)
-	gfx.setColor(unpack(dbg_color))
-	local i = 1; while i <= #str do
-		local char = str:sub(i, i)
-		
-		-- Handle escape sequences for colors.
-		if char == ESCAPE then
-			i = escape_seq(str, i)
-		else
-			dbg_putc(char)
-			i = i + 1
+	dbg_render_to(function()
+		local i = 1; while i <= #str do
+			local char = str:sub(i, i)
+			
+			-- Handle escape sequences for colors.
+			if char == ESCAPE then
+				i = escape_seq(str, i)
+			else
+				dbg_putc(char)
+				i = i + 1
+			end
 		end
-	end
-	
-	gfx.setCanvas(_canvas)
-	gfx.setFont(_font)
-	gfx.setColor(unpack(_color))
-	gfx.pop()
+	end)
 end
 
 function love.draw()
