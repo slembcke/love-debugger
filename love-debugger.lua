@@ -10,13 +10,13 @@ local dbg_font = gfx.newFont("VeraMono.ttf", 12)
 local dbg_canvas = gfx.newCanvas(gfx.getDimensions())
 dbg_canvas:renderTo(function() gfx.clear(0, 0, 0, 1) end)
 
-function dbg_render_to(func)
-	gfx.push()
+function dbg_render_to(canvas, func)
+	gfx.push(); gfx.origin()
 	local _canvas = gfx.getCanvas()
 	local _font = gfx.getFont()
 	local _color = {gfx.getColor()}
 	
-	gfx.setCanvas(dbg_canvas)
+	gfx.setCanvas(canvas)
 	gfx.setFont(dbg_font)
 	gfx.setColor(unpack(dbg_color))
 	
@@ -66,9 +66,11 @@ function dbg.read(prompt)
 	
 	local str = ""
 	while true do
-		gfx.clear()
-		gfx.draw(dbg_canvas)
-		gfx.present()
+		dbg_render_to(nil, function()
+			gfx.clear()
+			gfx.draw(dbg_canvas)
+			gfx.present()
+		end)
 		
 		local event, a = love.event.wait()
 		if event == "quit" then
@@ -80,7 +82,7 @@ function dbg.read(prompt)
 			local char = str:sub(-1, -1)
 			local w, h = dbg_font:getWidth(char), dbg_font:getHeight(char)
 			dbg_cursor.x = dbg_cursor.x - w
-			dbg_render_to(function()
+			dbg_render_to(dbg_canvas, function()
 				gfx.setColor(0, 0, 0)
 				gfx.rectangle("fill", dbg_cursor.x, dbg_cursor.y, w, h)
 			end)
@@ -109,7 +111,7 @@ local function escape_seq(str, i)
 end
 
 function dbg.write(str)
-	dbg_render_to(function()
+	dbg_render_to(dbg_canvas, function()
 		local i = 1; while i <= #str do
 			local char = str:sub(i, i)
 			
