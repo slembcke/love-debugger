@@ -261,7 +261,7 @@ function where(info, context_lines)
 		for i = info.currentline - context_lines, info.currentline + context_lines do
 			local caret = (i == info.currentline and " => " or "    ")
 			local line = source[i]
-			if line then dbg_writeln(COLOR_BLUE.."%d"..COLOR_RED.."%s"..COLOR_RESET.."%s", i, caret, line) end
+			if line then dbg_writeln(COLOR_BLUE.."% 4d"..COLOR_RED.."%s"..COLOR_RESET.."%s", i, caret, line) end
 		end
 	else
 		dbg_writeln(COLOR_RED.."Error: Source file '%s' not found.", info.source);
@@ -550,6 +550,12 @@ function dbg.call(f, ...)
 	return xpcall(f, dbg.msgh, ...)
 end
 
+function dbg.enable_color()
+	COLOR_RED = string.char(27) .. "[31m"
+	COLOR_BLUE = string.char(27) .. "[34m"
+	COLOR_RESET = string.char(27) .. "[0m"
+end
+
 -- Detect Lua version.
 if jit then -- LuaJIT
 	dbg_writeln(COLOR_RED.."debugger.lua: Loaded for "..jit.version..COLOR_RESET)
@@ -588,11 +594,7 @@ end
 
 -- Conditionally enable color support.
 local color_maybe_supported = (stdout_isatty and os.getenv("TERM") and os.getenv("TERM") ~= "dumb")
-if color_maybe_supported and not os.getenv("DBG_NOCOLOR") then
-	COLOR_RED = string.char(27) .. "[31m"
-	COLOR_BLUE = string.char(27) .. "[34m"
-	COLOR_RESET = string.char(27) .. "[0m"
-end
+if color_maybe_supported and not os.getenv("DBG_NOCOLOR") then dbg.enable_color() end
 
 if stdin_isatty and not os.getenv("DBG_NOREADLINE") then
 	pcall(function()
