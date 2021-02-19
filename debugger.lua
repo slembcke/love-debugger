@@ -1,5 +1,5 @@
 --[[
-	Copyright (c) 2016 Scott Lembcke and Howling Moon Software
+	Copyright (c) 2020 Scott Lembcke and Howling Moon Software
 	
 	Permission is hereby granted, free of charge, to any person obtaining a copy
 	of this software and associated documentation files (the "Software"), to deal
@@ -21,16 +21,18 @@
 	
 	TODO:
 	* Print short function arguments as part of stack location.
-	* Bug: sometimes doesn't advance to next line (same line event reported multiple times).
-	* Do coroutines work as expected?
+	* Properly handle being reentrant due to coroutines.
 ]]
 
 local dbg
 
 -- Use ANSI color codes in the prompt by default.
+local COLOR_GRAY = ""
 local COLOR_RED = ""
 local COLOR_BLUE = ""
+local COLOR_YELLOW = ""
 local COLOR_RESET = ""
+local GREEN_CARET = " => "
 
 local function pretty(obj, max_depth)
 	if max_depth == nil then max_depth = dbg.pretty_depth end
@@ -64,22 +66,6 @@ local function pretty(obj, max_depth)
 	return recurse(obj, 0)
 end
 
-local help_message = [[
-[return] - re-run last command
-c(ontinue) - continue execution
-s(tep) - step forward by one line (into functions)
-n(ext) - step forward by one line (skipping over functions)
-f(inish) - step forward until exiting the current function
-u(p) - move up the stack by one frame
-d(own) - move down the stack by one frame
-w(here) [line count] - print source code around the current line
-e(val) [statement] - execute the statement
-p(rint) [expression] - execute the expression and print the result
-t(race) - print the stack trace
-l(ocals) - print the function arguments, locals and upvalues.
-h(elp) - print this message
-q(uit) - halt execution]]
-
 -- The stack level that cmd_* functions use to access locals or info
 -- The structure of the code very carefully ensures this.
 local CMD_STACK_LEVEL = 6
@@ -91,6 +77,9 @@ local stack_top = 0
 -- The current stack frame index.
 -- Changed using the up/down commands
 local stack_inspect_offset = 0
+
+-- LuaJIT has an off by one bug when setting local variables.
+local LUA_JIT_SETLOCAL_WORKAROUND = 0
 
 -- Default dbg.read function
 local function dbg_read(prompt)
@@ -111,10 +100,13 @@ local function dbg_writeln(str, ...)
 	end
 end
 
+local function format_loc(file, line) return COLOR_BLUE..file..COLOR_RESET..":"..COLOR_YELLOW..line..COLOR_RESET end
 local function format_stack_frame_info(info)
-	local path = dbg.shorten_path(info.source:match("@(.*)") or info.source)
-	local fname = (info.name or string.format("<%s:%d>", path, info.linedefined))
-	return string.format(COLOR_BLUE.."%s:%d"..COLOR_RESET.." in '%s'", path, info.currentline, fname)
+	local filename = info.source:match("@(.*)")
+	local source = filename and dbg.shorten_path(filename) or info.short_src
+	local namewhat = (info.namewhat == "" and "chunk at" or info.namewhat)
+	local name = (info.name and "'"..COLOR_BLUE..info.name..COLOR_RESET.."'" or format_loc(source, info.linedefined))
+	return format_loc(source, info.currentline).." in "..namewhat.." "..name
 end
 
 local repl
@@ -196,8 +188,8 @@ local function mutate_bindings(_, name, value)
 	do local i = 1; repeat
 		local var = debug.getlocal(level, i)
 		if name == var then
-			dbg_writeln(COLOR_RED.."<debugger.lua: set local '"..COLOR_BLUE..name..COLOR_RED.."'>"..COLOR_RESET)
-			return debug.setlocal(level, i, value)
+			dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Set local "..COLOR_BLUE..name..COLOR_RESET)
+			return debug.setlocal(level + LUA_JIT_SETLOCAL_WORKAROUND, i, value)
 		end
 		i = i + 1
 	until var == nil end
@@ -207,14 +199,14 @@ local function mutate_bindings(_, name, value)
 	do local i = 1; repeat
 		local var = debug.getupvalue(func, i)
 		if name == var then
-			dbg_writeln(COLOR_RED.."<debugger.lua: set upvalue '"..COLOR_BLUE..name..COLOR_RED.."'>"..COLOR_RESET)
+			dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Set upvalue "..COLOR_BLUE..name..COLOR_RESET)
 			return debug.setupvalue(func, i, value)
 		end
 		i = i + 1
 	until var == nil end
 	
 	-- Set a global.
-	dbg_writeln(COLOR_RED.."<debugger.lua: set global '"..COLOR_BLUE..name..COLOR_RED.."'>"..COLOR_RESET)
+	dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Set global "..COLOR_BLUE..name..COLOR_RESET)
 	_G[name] = value
 end
 
@@ -231,40 +223,33 @@ local function compile_chunk(block, env)
 		chunk = load(block, source, "t", env)
 	end
 	
-	if chunk then
-		return chunk
-	else
-		dbg_writeln(COLOR_RED.."Error: Could not compile block:\n"..COLOR_RESET..block)
-		return nil
-	end
+	if not chunk then dbg_writeln(COLOR_RED.."Error: Could not compile block:\n"..COLOR_RESET..block) end
+	return chunk
 end
 
-local SOURCE_CACHE = {["<unknown filename>"] = {}}
+local SOURCE_CACHE = {}
 
 function where(info, context_lines)
-	local key = info.source or "<unknown filename>"
-	local source = SOURCE_CACHE[key]
-	
+	local source = SOURCE_CACHE[info.source]
 	if not source then
 		source = {}
 		local filename = info.source:match("@(.*)")
 		if filename then
 			pcall(function() for line in io.lines(filename) do table.insert(source, line) end end)
-		else
+		elseif info.source then
 			for line in info.source:gmatch("(.-)\n") do table.insert(source, line) end
 		end
-		
-		SOURCE_CACHE[key] = source
+		SOURCE_CACHE[info.source] = source
 	end
 	
-	if source[info.currentline] then
+	if source and source[info.currentline] then
 		for i = info.currentline - context_lines, info.currentline + context_lines do
-			local caret = (i == info.currentline and " => " or "    ")
+			local GREEN_CARET = (i == info.currentline and  GREEN_CARET or "    ")
 			local line = source[i]
-			if line then dbg_writeln(COLOR_BLUE.."% 4d"..COLOR_RED.."%s"..COLOR_RESET.."%s", i, caret, line) end
+			if line then dbg_writeln(COLOR_GRAY.."% 4d"..GREEN_CARET.."%s", i, line) end
 		end
 	else
-		dbg_writeln(COLOR_RED.."Error: Source file '%s' not found.", info.source);
+		dbg_writeln(COLOR_RED.."Error: Source not available for "..COLOR_BLUE..info.short_src);
 	end
 	
 	return false
@@ -300,7 +285,7 @@ local function cmd_print(expr)
 	
 	-- The first result is the pcall error.
 	if not results[1] then
-		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." %s", results[2])
+		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." "..results[2])
 	else
 		local output = ""
 		for i = 2, results.n do
@@ -308,7 +293,7 @@ local function cmd_print(expr)
 		end
 		
 		if output == "" then output = "<no result>" end
-		dbg_writeln(COLOR_BLUE..expr..COLOR_RED.." => "..COLOR_RESET..output)
+		dbg_writeln(COLOR_BLUE..expr.. GREEN_CARET..output)
 	end
 	
 	return false
@@ -327,13 +312,13 @@ local function cmd_eval(code)
 	-- Call the chunk and collect the results.
 	local success, err = pcall(chunk, unpack(rawget(env, "...") or {}))
 	if not success then
-		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." %s", err)
+		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." "..err)
 	end
 	
 	return false
 end
 
-local function cmd_up()
+local function cmd_down()
 	local offset = stack_inspect_offset
 	local info
 	
@@ -344,19 +329,17 @@ local function cmd_up()
 	
 	if info then
 		stack_inspect_offset = offset
-		dbg.info = info
+		dbg_writeln("Inspecting frame: "..format_stack_frame_info(info))
+		if tonumber(dbg.auto_where) then where(info, dbg.auto_where) end
 	else
 		info = debug.getinfo(stack_inspect_offset + CMD_STACK_LEVEL)
-		dbg_writeln(COLOR_BLUE.."Already at the top of the stack."..COLOR_RESET)
+		dbg_writeln("Already at the bottom of the stack.")
 	end
-	
-	dbg_writeln("Inspecting frame: "..format_stack_frame_info(info))
-	if tonumber(dbg.auto_where) then where(info, dbg.auto_where) end
 	
 	return false
 end
 
-local function cmd_down()
+local function cmd_up()
 	local offset = stack_inspect_offset
 	local info
 	
@@ -368,14 +351,12 @@ local function cmd_down()
 	
 	if info then
 		stack_inspect_offset = offset
-		dbg.info = info
+		dbg_writeln("Inspecting frame: "..format_stack_frame_info(info))
+		if tonumber(dbg.auto_where) then where(info, dbg.auto_where) end
 	else
 		info = debug.getinfo(stack_inspect_offset + CMD_STACK_LEVEL)
-		dbg_writeln(COLOR_BLUE.."Already at the bottom of the stack."..COLOR_RESET)
+		dbg_writeln("Already at the top of the stack.")
 	end
-	
-	dbg_writeln("Inspecting frame: "..format_stack_frame_info(info))
-	if tonumber(dbg.auto_where) then where(info, dbg.auto_where) end
 	
 	return false
 end
@@ -386,15 +367,14 @@ local function cmd_where(context_lines)
 end
 
 local function cmd_trace()
-	local location = format_stack_frame_info(debug.getinfo(stack_inspect_offset + CMD_STACK_LEVEL))
-	local message = string.format("Inspecting frame: %d - (%s)", stack_inspect_offset - stack_top, location)
-	local str = debug.traceback(message, stack_top + CMD_STACK_LEVEL)
-	
-	-- Iterate the lines of the stack trace so we can number/highlight them.
-	local i = -2
-	for line in str:gmatch("([^\n]+)\n?") do
-		if i >= 0 then line = tostring(i)..line end
-		dbg_writeln((i + stack_top == stack_inspect_offset) and COLOR_BLUE..line..COLOR_RESET or line)
+	dbg_writeln("Inspecting frame %d", stack_inspect_offset - stack_top)
+	local i = 0; while true do
+		local info = debug.getinfo(stack_top + CMD_STACK_LEVEL + i)
+		if not info then break end
+		
+		local is_current_frame = (i + stack_top == stack_inspect_offset)
+		local GREEN_CARET = (is_current_frame and  GREEN_CARET or "    ")
+		dbg_writeln(COLOR_GRAY.."% 4d"..COLOR_RESET..GREEN_CARET.."%s", i, format_stack_frame_info(info))
 		i = i + 1
 	end
 	
@@ -414,35 +394,55 @@ local function cmd_locals()
 		
 		-- Skip the debugger object itself, "(*internal)" values, and Lua 5.2's _ENV object.
 		if not rawequal(v, dbg) and k ~= "_ENV" and not k:match("%(.*%)") then
-			dbg_writeln("\t"..COLOR_BLUE.."%s "..COLOR_RED.."=>"..COLOR_RESET.." %s", k, pretty(v))
+			dbg_writeln("  "..COLOR_BLUE..k.. GREEN_CARET..pretty(v))
 		end
 	end
 	
 	return false
 end
 
+local function cmd_help()
+	dbg.write(""
+		.. COLOR_BLUE.."  <return>"..GREEN_CARET.."re-run last command\n"
+		.. COLOR_BLUE.."  c"..COLOR_YELLOW.."(ontinue)"..GREEN_CARET.."continue execution\n"
+		.. COLOR_BLUE.."  s"..COLOR_YELLOW.."(tep)"..GREEN_CARET.."step forward by one line (into functions)\n"
+		.. COLOR_BLUE.."  n"..COLOR_YELLOW.."(ext)"..GREEN_CARET.."step forward by one line (skipping over functions)\n"
+		.. COLOR_BLUE.."  f"..COLOR_YELLOW.."(inish)"..GREEN_CARET.."step forward until exiting the current function\n"
+		.. COLOR_BLUE.."  u"..COLOR_YELLOW.."(p)"..GREEN_CARET.."move up the stack by one frame\n"
+		.. COLOR_BLUE.."  d"..COLOR_YELLOW.."(own)"..GREEN_CARET.."move down the stack by one frame\n"
+		.. COLOR_BLUE.."  w"..COLOR_YELLOW.."(here) "..COLOR_BLUE.."[line count]"..GREEN_CARET.."print source code around the current line\n"
+		.. COLOR_BLUE.."  e"..COLOR_YELLOW.."(val) "..COLOR_BLUE.."[statement]"..GREEN_CARET.."execute the statement\n"
+		.. COLOR_BLUE.."  p"..COLOR_YELLOW.."(rint) "..COLOR_BLUE.."[expression]"..GREEN_CARET.."execute the expression and print the result\n"
+		.. COLOR_BLUE.."  t"..COLOR_YELLOW.."(race)"..GREEN_CARET.."print the stack trace\n"
+		.. COLOR_BLUE.."  l"..COLOR_YELLOW.."(ocals)"..GREEN_CARET.."print the function arguments, locals and upvalues.\n"
+		.. COLOR_BLUE.."  h"..COLOR_YELLOW.."(elp)"..GREEN_CARET.."print this message\n"
+		.. COLOR_BLUE.."  q"..COLOR_YELLOW.."(uit)"..GREEN_CARET.."halt execution\n"
+	)
+	return false
+end
+
 local last_cmd = false
 
+local commands = {
+	["^c$"] = function() return true end,
+	["^s$"] = cmd_step,
+	["^n$"] = cmd_next,
+	["^f$"] = cmd_finish,
+	["^p%s+(.*)$"] = cmd_print,
+	["^e%s+(.*)$"] = cmd_eval,
+	["^u$"] = cmd_up,
+	["^d$"] = cmd_down,
+	["^w%s*(%d*)$"] = cmd_where,
+	["^t$"] = cmd_trace,
+	["^l$"] = cmd_locals,
+	["^h$"] = cmd_help,
+	["^q$"] = function() dbg.exit(0); return true end,
+}
+
 local function match_command(line)
-	local commands = {
-		["c"] = function() return true end,
-		["s"] = cmd_step,
-		["n"] = cmd_next,
-		["f"] = cmd_finish,
-		["p (.*)"] = cmd_print,
-		["e (.*)"] = cmd_eval,
-		["u"] = cmd_up,
-		["d"] = cmd_down,
-		["w ?(%d*)"] = cmd_where,
-		["t"] = cmd_trace,
-		["l"] = cmd_locals,
-		["h"] = function() dbg_writeln(help_message); return false end,
-		["q"] = function() dbg.exit(0); return true end,
-	}
-	
-	for cmd, cmd_func in pairs(commands) do
-		local matches = {line:match("^("..cmd..")$")}
-		if matches[1] then return cmd_func, select(2, unpack(matches)) end
+	for pat, func in pairs(commands) do
+		-- Return the matching command and capture argument.
+		if line:find(pat) then return func, line:match(pat) end
 	end
 end
 
@@ -460,6 +460,8 @@ local function run_command(line)
 		last_cmd = line
 		-- unpack({...}) prevents tail call elimination so the stack frame indices are predictable.
 		return unpack({command(command_arg)})
+	elseif dbg.auto_eval then
+		return unpack({cmd_eval(line)})
 	else
 		dbg_writeln(COLOR_RED.."Error:"..COLOR_RESET.." command '%s' not recognized.\nType 'h' and press return for a command list.", line)
 		return false
@@ -473,7 +475,6 @@ repl = function()
 	end
 	
 	local info = debug.getinfo(stack_inspect_offset + CMD_STACK_LEVEL - 3)
-	dbg.info = info
 	dbg_writeln(format_stack_frame_info(info))
 	
 	if tonumber(dbg.auto_where) then where(info, dbg.auto_where) end
@@ -483,7 +484,7 @@ repl = function()
 		if success then
 			debug.sethook(hook and hook(0), "crl")
 		else
-			local message = string.format(COLOR_RED.."INTERNAL DEBUGGER.LUA ERROR. ABORTING\n:"..COLOR_RESET.." %s", done)
+			local message = COLOR_RED.."INTERNAL DEBUGGER.LUA ERROR. ABORTING\n:"..COLOR_RESET.." "..done
 			dbg_writeln(message)
 			error(message)
 		end
@@ -517,53 +518,49 @@ dbg.pretty = pretty
 dbg.pp = function(value, depth) dbg_writeln(pretty(value, depth)) end
 
 dbg.auto_where = false
+dbg.auto_eval = false
+
+local lua_error, lua_assert = error, assert
 
 -- Works like error(), but invokes the debugger.
 function dbg.error(err, level)
 	level = level or 1
-	dbg_writeln(COLOR_RED.."debugger.lua stopped on "..COLOR_RESET..'error("%s")', pretty(err))
+	dbg_writeln(COLOR_RED.."Debugger stopped on error(): "..COLOR_RESET..pretty(err))
 	dbg(false, level)
 	
-	error(err, level)
+	lua_error(err, level)
 end
 
 -- Works like assert(), but invokes the debugger on a failure.
 function dbg.assert(condition, message)
 	if not condition then
-		dbg_writeln(COLOR_RED.."debugger.lua stopped on "..COLOR_RESET..'assert(..., "%s")', message)
+		dbg_writeln(COLOR_RED.."Debugger stopped on assert:"..COLOR_RESET..message)
 		dbg(false, 1)
 	end
 	
-	assert(condition, message)
-end
-
--- Error message handler that can be used with xpcall()/lua_pcall().
-function dbg.msgh(err)
-	dbg_writeln(COLOR_RED.."debugger.lua stopped on error: "..COLOR_RESET..pretty(err))
-	dbg(false, 1)
-	
-	return err
+	lua_assert(condition, message)
 end
 
 -- Works like pcall(), but invokes the debugger on an error.
 function dbg.call(f, ...)
-	return xpcall(f, dbg.msgh, ...)
+	return xpcall(f, function(err)
+		dbg_writeln(COLOR_RED.."Debugger stopped on error in dbg.call(): "..COLOR_RESET..pretty(err))
+		dbg(false, 1)
+		
+		return err
+	end, ...)
 end
 
-function dbg.enable_color()
-	COLOR_RED = string.char(27) .. "[31m"
-	COLOR_BLUE = string.char(27) .. "[34m"
-	COLOR_RESET = string.char(27) .. "[0m"
-end
-
--- Detect Lua version.
-if jit then -- LuaJIT
-	dbg_writeln(COLOR_RED.."debugger.lua: Loaded for "..jit.version..COLOR_RESET)
-elseif "Lua 5.1" <= _VERSION and _VERSION <= "Lua 5.3" then
-	dbg_writeln(COLOR_RED.."debugger.lua: Loaded for ".._VERSION..COLOR_RESET)
-else
-	dbg_writeln(COLOR_RED.."debugger.lua: Not tested against ".._VERSION..COLOR_RESET)
-	dbg_writeln(COLOR_RED.."Please send me feedback!"..COLOR_RESET)
+-- Error message handler that can be used with lua_pcall().
+function dbg.msgh(...)
+	if debug.getinfo(2) then
+		dbg_writeln(COLOR_RED.."Debugger attached on error in dbg_call(): "..COLOR_RESET..pretty(...))
+		dbg(false, 1)
+	else
+		dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Error did not occur in Lua code. Execution will continue after dbg_pcall().")
+	end
+	
+	return ...
 end
 
 -- Assume stdin/out are TTYs unless we can use LuaJIT's FFI to properly check them.
@@ -594,7 +591,14 @@ end
 
 -- Conditionally enable color support.
 local color_maybe_supported = (stdout_isatty and os.getenv("TERM") and os.getenv("TERM") ~= "dumb")
-if color_maybe_supported and not os.getenv("DBG_NOCOLOR") then dbg.enable_color() end
+if color_maybe_supported and not os.getenv("DBG_NOCOLOR") then
+	COLOR_GRAY = string.char(27) .. "[90m"
+	COLOR_RED = string.char(27) .. "[91m"
+	COLOR_BLUE = string.char(27) .. "[94m"
+	COLOR_YELLOW = string.char(27) .. "[33m"
+	COLOR_RESET = string.char(27) .. "[0m"
+	GREEN_CARET = string.char(27) .. "[92m => "..COLOR_RESET
+end
 
 if stdin_isatty and not os.getenv("DBG_NOREADLINE") then
 	pcall(function()
@@ -656,6 +660,17 @@ if stdin_isatty and not os.getenv("DBG_NOREADLINE") then
 			dbg_writeln(COLOR_RED.."debugger.lua: Readline support enabled."..COLOR_RESET)
 		end
 	end)
+end
+
+-- Detect Lua version.
+if jit then -- LuaJIT
+	LUA_JIT_SETLOCAL_WORKAROUND = -1
+	dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Loaded for "..jit.version)
+elseif "Lua 5.1" <= _VERSION and _VERSION <= "Lua 5.4" then
+	dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Loaded for ".._VERSION)
+else
+	dbg_writeln(COLOR_RED.."debugger.lua: "..COLOR_RESET.."Not tested against ".._VERSION)
+	dbg_writeln(COLOR_RED.."Please send me feedback!"..COLOR_RESET)
 end
 
 return dbg

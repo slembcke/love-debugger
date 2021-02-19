@@ -2,7 +2,7 @@ local gfx = love.graphics;
 
 local dbg = require 'debugger'
 dbg.auto_where = 2
-dbg.enable_color()
+-- dbg.enable_color()
 
 local dbg_cursor = {x = 0, y = 0}
 local dbg_color = {1, 1, 1, 1}
@@ -96,7 +96,20 @@ function dbg.read(prompt)
 end
 
 local ESCAPE = string.char(27)
-local COLORS = {["31"] = {1, 0.5, 0.5}, ["34"] = {0.5, 0.5, 1}, ["0"] = {1, 1, 1}}
+	-- COLOR_GRAY = string.char(27) .. "[90m"
+	-- COLOR_RED = string.char(27) .. "[91m"
+	-- COLOR_BLUE = string.char(27) .. "[94m"
+	-- COLOR_YELLOW = string.char(27) .. "[33m"
+	-- COLOR_RESET = string.char(27) .. "[0m"
+	-- GREEN_CARET = string.char(27) .. "[92m => "..COLOR_RESET
+local COLORS = {
+	["0"] = {1, 1, 1},
+	["33"] = {0.75, 0.75, 0.25},
+	["90"] = {0.5, 0.5, 0.5},
+	["91"] = {1, 0.25, 0.25},
+	["92"] = {0.5, 1, 0.5},
+	["94"] = {0.25, 0.25, 1},
+}
 
 local function escape_seq(str, i)
 	local ctrl, j = str:match("%[(%d+)m()", i + 1)
